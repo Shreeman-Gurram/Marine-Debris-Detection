@@ -1,9 +1,10 @@
 // src/services/api.js
 // Real SONARIS API integration — no mock data.
-// All functions call the FastAPI backend at /api/*
-// (proxied via Vite dev server to http://localhost:8000)
+// In development: defaults to relative /api (proxied by Vite to http://localhost:8000)
+// In production: configured via VITE_API_URL environment variable (e.g. https://sonaris-api.onrender.com)
 
-const BASE = "/api";
+const _RAW_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const BASE = _RAW_API_URL ? `${_RAW_API_URL}/api` : "/api";
 
 // ---------------------------------------------------------------------------
 // Analyze

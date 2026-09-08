@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: sonaris-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    plan: standard
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: MONGODB_URI
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: MODEL_DOWNLOAD_URL
+        sync: false
+      - key: EVIDENCE_DIR
+        sync: false

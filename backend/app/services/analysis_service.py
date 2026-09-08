@@ -31,6 +31,7 @@ Evidence Image Notes:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -74,7 +75,9 @@ logger = logging.getLogger("sonaris.analysis")
 CONF_THRESHOLD          = 0.10    # Low threshold per DRISHTI docs
 MIN_BOX_AREA_PX         = 64.0   # Reject boxes smaller than 8×8 pixels
 DRISHTI_DEFAULT_RANGE_M = 50.0   # SSS swath half-range fallback (metres)
-EVIDENCE_DIR            = _PROJECT_ROOT / "outputs" / "evidence"
+_CUSTOM_EVIDENCE_DIR    = os.environ.get("EVIDENCE_DIR", "").strip()
+EVIDENCE_DIR            = Path(_CUSTOM_EVIDENCE_DIR) if _CUSTOM_EVIDENCE_DIR else _PROJECT_ROOT / "outputs" / "evidence"
+
 
 # Evidence image annotation colours (BGR)
 _COLOUR_BY_LEVEL = {

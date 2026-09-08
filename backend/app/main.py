@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -30,6 +31,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .services.analysis_service import AnalysisService, EVIDENCE_DIR
+from .services.model_loader import (
+    ensure_model_available,
+    is_model_available,
+    get_default_model_path,
+)
 from .database.mongodb import (
     insert_analysis,
     get_analyses_collection,
@@ -42,36 +48,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sonaris.api")
 
-# ---------------------------------------------------------------------------
-# Project root — walk up from __file__ to find the dir containing models/
-# ---------------------------------------------------------------------------
-def _find_project_root() -> Path:
-    here = Path(__file__).resolve()
-    for parent in [here, *here.parents]:
-        if (parent / "models" / "best_detector.pt").exists():
-            return parent
-    return here.parent.parent.parent
-
-
-_PROJECT_ROOT = _find_project_root()
-_MODEL_PATH   = _PROJECT_ROOT / "models" / "best_detector.pt"
-
 app = FastAPI(
     title="SONARIS Backend",
     description="AI-powered Side-Scan Sonar (SSS) anomaly detection system",
-    version="0.4.0",
-)
-
-# Allow Vite dev server (port 5173) to call the API during development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    version="0.4.1",
 )
 
 # ---------------------------------------------------------------------------
-# Lazy model service — loaded once on first request
+# CORS configuration — supports local development and cloud production
+# ---------------------------------------------------------------------------
+_default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_env_origins = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if _env_origins == "*":
+    _allowed_origins = ["*"]
+elif _env_origins:
+    _allowed_origins = list(set(_default_origins + [o.strip() for o in _env_origins.split(",") if o.strip()]))
+else:
+    _allowed_origins = _default_origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True if _allowed_origins != ["*"] else False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+logger.info("CORS configured with allowed origins: %s", _allowed_origins)
+
+# ---------------------------------------------------------------------------
+# Lazy model service — loaded once on first request or pre-warmed on startup
 # ---------------------------------------------------------------------------
 _service: Optional[AnalysisService] = None
 
@@ -79,12 +89,8 @@ _service: Optional[AnalysisService] = None
 def _get_service() -> AnalysisService:
     global _service
     if _service is None:
-        if not _MODEL_PATH.exists():
-            raise RuntimeError(
-                f"YOLO model not found: {_MODEL_PATH}. "
-                "Ensure models/best_detector.pt exists in the project root."
-            )
-        _service = AnalysisService(model_path=_MODEL_PATH)
+        model_path = ensure_model_available()
+        _service = AnalysisService(model_path=model_path)
     return _service
 
 
@@ -105,8 +111,13 @@ def _serialize_doc(doc: dict) -> dict:
 
 @app.get("/api/health")
 async def health_check():
-    """Liveness probe."""
-    return {"status": "ok", "service": "sonaris-backend"}
+    """Liveness and readiness probe for cloud monitoring."""
+    model_ready = is_model_available()
+    return {
+        "status": "ok",
+        "service": "sonaris-backend",
+        "model_available": model_ready,
+    }
 
 
 # ---------------------------------------------------------------------------
