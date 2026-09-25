@@ -1,6 +1,6 @@
 ﻿# SONARIS — Sonar Anomaly Recognition & Identification System
 
-> **Smart India Hackathon 2025 Prototype**
+> **Smart India Hackathon 2026 Prototype**
 > Team: Marine Debris Detection
 > Problem Domain: Marine / Underwater Surveillance
 
@@ -39,7 +39,7 @@ SONARIS is a full-stack web application that:
 
 1. **Ingests** individual or batches of sonar image frames.
 2. **Detects** underwater anomalies using a custom-trained YOLOv8 model.
-3. **Tracks** the same anomaly across sequential sonar frames so each real-world object is counted exactly once.
+3. **Tracks** the same anomaly across sequential sonar frames so repeated detections of the same tracked anomaly can be consolidated into a single persistent track.
 4. **Reports** risk-scored results with annotated evidence images, persistent track summaries, and exportable survey history.
 
 ---
@@ -56,7 +56,7 @@ SONARIS is a full-stack web application that:
 | Class-gated matching | Tracks only match detections of the same class |
 | Deduplication | Multiple detections of the same object across N frames = 1 persistent anomaly |
 
-**Demo numbers (smoke-tested):**
+**Validation result (smoke-test on real sonar images — not a general performance metric):**
 
 ```
 Frames processed  : 4
@@ -74,49 +74,57 @@ Merged detections : 9
 - Confidence-filtered detections with class labels
 - Risk score (LOW / MEDIUM / HIGH / CRITICAL)
 - Annotated evidence image generated server-side
-- Stored to MongoDB as a survey document
+- Stored to MongoDB as a document in the `analyses` collection
+- PDF report download per survey
 
 ### Batch Analysis (up to 10 frames)
-- Upload 2-10 sequential sonar frames in a single request
+- Upload 1-10 sequential sonar frames in a single request
 - Frames processed in exact upload order
 - Per-frame detection results
 - Cross-frame Persistent Anomaly Tracking via SonarTracker
-- Batch stored to MongoDB batches collection
+- Batch stored to MongoDB `batches` collection
 - Batch history and detail view in the UI
 
 ### Survey History & Statistics
-- Paginated survey list with filters
+- Paginated survey list
 - Aggregate statistics dashboard
 - Batch history with persistent track summaries
+- Operator verification workflow (Confirmed / Rejected / Uncertain)
 
 ---
 
 ## Architecture
 
 ```
-Browser (React + Vite, port 5173)
+Browser (React 18 + Vite 6, port 5173)
    |
    | HTTP — /api proxied to :8000
    |
 FastAPI Backend (port 8000)
    |
-   |-- POST /api/analyze          (single frame)
-   |-- POST /api/analyze/batch    (2-10 frames)
-   |-- GET  /api/surveys          (history)
-   |-- GET  /api/surveys/stats    (statistics)
-   |-- GET  /api/batches          (batch history)
-   |-- GET  /api/batches/{id}     (batch detail)
-   |-- GET  /api/evidence/{file}  (annotated image)
+   |-- GET  /api/health                           (liveness probe)
+   |-- POST /api/analyze                          (single frame)
+   |-- POST /api/analyze/batch                    (1-10 frames)
+   |-- GET  /api/evidence/{filename}              (annotated image)
+   |-- GET  /api/surveys                          (history list)
+   |-- GET  /api/surveys/stats                    (statistics)
+   |-- GET  /api/surveys/{id}                     (single survey)
+   |-- PUT  /api/surveys/{id}/verifications       (operator review)
+   |-- GET  /api/surveys/{id}/report/pdf          (PDF download)
+   |-- GET  /api/batches                          (batch history)
+   |-- GET  /api/batches/{id}                     (batch detail)
    |
    Services:
-     AnalysisService     — sonar preprocessing + YOLO inference
+     AnalysisService      — sonar preprocessing + YOLO inference
      BatchAnalysisService — orchestrates multi-frame workflow
-     SonarTracker        — IoU-based persistent anomaly tracking
-     ModelLoader         — lazy-loads best_detector.pt
+     SonarTracker         — IoU-based persistent anomaly tracking
+     ModelLoader          — lazy-loads / auto-downloads best_detector.pt
    |
    pymongo
    |
-MongoDB Atlas (collections: surveys | batches)
+MongoDB Atlas
+  Database:    sonaris
+  Collections: analyses | batches
 ```
 
 ---
@@ -125,11 +133,13 @@ MongoDB Atlas (collections: surveys | batches)
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite 5, Vanilla CSS |
-| Backend | Python 3.11+, FastAPI, Uvicorn |
+| Frontend | React 18, Vite 6, Vanilla CSS (light marine/ocean theme) |
+| Frontend extras | react-router-dom, react-leaflet, recharts, lucide-react |
+| Backend | Python 3.11, FastAPI, Uvicorn |
 | ML Inference | Ultralytics YOLOv8, OpenCV |
 | Database | MongoDB Atlas (pymongo) |
 | Evidence generation | OpenCV image annotation |
+| PDF reports | ReportLab |
 | Testing | pytest (backend) |
 | Deployment | Render (backend), Vercel (frontend) |
 
@@ -142,10 +152,11 @@ prototype/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                  # FastAPI app + all route handlers
-│   │   ├── database/                # MongoDB client & collection helpers
+│   │   ├── database/
+│   │   │   └── mongodb.py           # MongoDB client, collections: analyses + batches
 │   │   └── services/
 │   │       ├── analysis_service.py  # Single-frame inference pipeline
-│   │       ├── batch_service.py     # Batch orchestration
+│   │       ├── batch_service.py     # Batch orchestration (max 10 frames)
 │   │       ├── tracking_service.py  # SonarTracker (persistent anomaly tracking)
 │   │       └── model_loader.py      # YOLO model download & cache
 │   ├── tests/
@@ -163,10 +174,15 @@ prototype/
 │   │   │   ├── BatchUpload.jsx
 │   │   │   └── BatchResult.jsx
 │   │   ├── services/api.js          # Axios wrappers for all endpoints
-│   │   └── styles.css               # Full design system (dark marine theme)
+│   │   └── styles.css               # Design system — light marine/ocean palette
 │   ├── package.json
 │   └── vite.config.js
-├── ml/                              # ML experimentation notebooks / scripts
+├── ml/
+│   ├── preprocessing/               # NLM denoise, CLAHE normalize, unsharp enhance
+│   ├── detection/
+│   ├── filtering/
+│   ├── scoring/
+│   └── geolocation/
 ├── models/                          # Model weights directory (gitignored)
 ├── test_data/                       # Sample sonar images (gitignored)
 ├── outputs/                         # Generated evidence images (gitignored)
@@ -182,17 +198,17 @@ prototype/
 
 ### Prerequisites
 
-| Requirement | Version |
-|------------|---------|
-| Python | 3.11+ |
-| Node.js | 18+ |
-| npm | 9+ |
+| Requirement | Minimum Version |
+|------------|-----------------|
+| Python | 3.11 |
+| Node.js | 18 |
+| npm | 9 |
 | MongoDB Atlas | Free tier cluster (M0) |
 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<your-org>/Marine-Debris-Detection.git
+git clone https://github.com/Shreeman-Gurram/Marine-Debris-Detection.git
 cd Marine-Debris-Detection/prototype
 ```
 
@@ -220,7 +236,7 @@ pip install -r requirements.txt
 uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The backend auto-downloads `best_detector.pt` on first startup if `MODEL_DOWNLOAD_URL` is set.
+The backend auto-downloads `best_detector.pt` on first startup if `MODEL_DOWNLOAD_URL` (or `YOLO_MODEL_URL`) is set.
 
 ### 4. Frontend setup
 
@@ -241,11 +257,11 @@ See `.env.example` for the full reference.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MONGODB_URI` | Yes | MongoDB Atlas connection string |
-| `MODEL_DOWNLOAD_URL` | Yes (cloud) | Direct URL to `best_detector.pt` |
-| `ALLOWED_ORIGINS` | Optional | CORS origins (defaults to localhost) |
-| `EVIDENCE_DIR` | Optional | Evidence image storage path |
-| `PORT` | Optional | HTTP port (default: 8000) |
-| `VITE_API_URL` | Optional | Backend URL for Vercel builds |
+| `MODEL_DOWNLOAD_URL` | Yes (cloud) | Direct download URL to `best_detector.pt`. Alias `YOLO_MODEL_URL` also accepted. |
+| `ALLOWED_ORIGINS` | Optional | Comma-separated CORS origins (defaults to localhost). Use `*` to allow all. |
+| `EVIDENCE_DIR` | Optional | Evidence image storage path (defaults to `outputs/evidence/`) |
+| `PORT` | Optional | HTTP port — provided automatically by Render via `$PORT` |
+| `VITE_API_URL` | Optional | Backend URL for Vercel production builds |
 
 > Never commit your `.env` file. It is listed in `.gitignore`.
 
@@ -253,21 +269,37 @@ See `.env.example` for the full reference.
 
 ## API Reference
 
+All endpoints are prefixed with `/api`.
+
+### Health
+
+```
+GET /api/health
+Response: { "status": "ok", "service": "sonaris-backend", "model_available": true }
+```
+
 ### Single Frame Analysis
 
 ```
 POST /api/analyze
 Content-Type: multipart/form-data
 
-Body:  file: <sonar image>
+Form fields:
+  file           (required) — sonar image .jpg/.jpeg/.png
+  range_m        (optional) — sonar slant range in metres
+  latitude       (optional) — WGS84 latitude
+  longitude      (optional) — WGS84 longitude
+  heading_deg    (optional) — vessel heading
+  gps_accuracy_m (optional) — GPS accuracy in metres
 
 Response:
 {
-  "survey_id": "...",
+  "analysis_id": "...",
   "detections": [...],
+  "total_detections": 3,
   "risk_level": "HIGH",
   "risk_score": 0.78,
-  "evidence_filename": "..._evidence_xxxx.jpg"
+  "evidence_image": "..._evidence_xxxx.jpg"
 }
 ```
 
@@ -277,27 +309,48 @@ Response:
 POST /api/analyze/batch
 Content-Type: multipart/form-data
 
-Body:  files: <2-10 sonar images>  (order preserved)
+Form fields:
+  files           (required) — 1 to 10 sonar image files (order preserved)
+  slant_range_m   (optional)
+  heading_deg     (optional)
+  latitude        (optional)
+  longitude       (optional)
+  gps_accuracy_m  (optional)
 
 Response:
 {
   "batch_id": "...",
+  "batch_db_id": "...",
   "total_frames": 4,
   "total_raw_detections": 12,
-  "persistent_tracks": 3,
-  "merged_detections": 9,
+  "total_persistent_tracks": 3,
+  "duplicates_merged": 9,
   "frames": [...],
   "tracks": [...]
 }
 ```
 
-### Other Endpoints
+### Survey History
 
 ```
-GET /api/batches/{batch_id}   — Retrieve a stored batch result
-GET /api/surveys?limit=20     — Survey history
-GET /api/surveys/stats        — Aggregate statistics
-GET /api/evidence/{filename}  — Annotated evidence image
+GET /api/surveys?limit=20          — list recent analyses (analyses collection)
+GET /api/surveys/stats             — aggregate statistics
+GET /api/surveys/{id}              — single survey document
+PUT /api/surveys/{id}/verifications — persist operator review decisions
+GET /api/surveys/{id}/report/pdf   — download PDF report
+```
+
+### Batch History
+
+```
+GET /api/batches?limit=20          — list recent batches (batches collection)
+GET /api/batches/{id}              — single batch document (by MongoDB ObjectId)
+```
+
+### Evidence Image
+
+```
+GET /api/evidence/{filename}       — serve annotated evidence image (JPEG)
 ```
 
 ---
@@ -305,20 +358,31 @@ GET /api/evidence/{filename}  — Annotated evidence image
 ## ML Model
 
 - **Architecture:** YOLOv8 (Ultralytics)
-- **Task:** Object detection on sonar imagery
-- **Weights:** `best_detector.pt` — gitignored, auto-downloaded on startup
-- **Sonar Preprocessing Pipeline:**
-  1. Grayscale normalization
-  2. CLAHE contrast enhancement
-  3. Gaussian noise reduction
-  4. Resize to model input size
-  5. BGR conversion for Ultralytics compatibility
+- **Task:** Object detection on side-scan sonar (SSS) imagery
+- **Weights file:** `best_detector.pt` — **not committed to Git** (gitignored, auto-downloaded at runtime)
+- **Retrieval:** Set `MODEL_DOWNLOAD_URL` (or `YOLO_MODEL_URL`) in `.env`; the backend downloads weights on first startup.
 
-To inspect class names after downloading:
+### Detected Classes
 
-```bash
-python -c "from ultralytics import YOLO; m=YOLO('models/best_detector.pt'); print(m.names)"
-```
+| Class ID | Class Name |
+|----------|-----------|
+| 0 | crab_pot |
+| 1 | submarine_pipeline |
+| 2 | shipwreck |
+| 3 | ghost_net |
+| 4 | mine_cylinder |
+
+### Sonar Preprocessing Pipeline
+
+Each sonar image passes through the following steps before YOLO inference
+(`ml/preprocessing/`):
+
+1. **Load as grayscale** — file or numpy array input; convert BGR to grayscale
+2. **NLM Denoising** — Non-Local Means (`cv2.fastNlMeansDenoising`) reduces sonar speckle while preserving target edges
+3. **CLAHE Normalization** — Contrast Limited Adaptive Histogram Equalization enhances local contrast
+4. **Unsharp Masking Enhancement** — sharpens fine sonar features after CLAHE
+5. **Float32 scaling** — output normalized to `[0.0, 1.0]`
+6. **BGR conversion** — for Ultralytics YOLO compatibility
 
 ---
 
@@ -333,8 +397,8 @@ Expected: **91 tests passing**
 
 | File | Coverage |
 |------|---------|
-| `test_tracking_service.py` | SonarTracker — 33 unit tests |
-| `test_batch_service.py` | Batch pipeline |
+| `test_tracking_service.py` | SonarTracker — 33 unit tests (IoU matching, track lifecycle, edge cases) |
+| `test_batch_service.py` | Batch pipeline with mock detections |
 | `test_analyze_api.py` | Single-frame API integration |
 
 ---
@@ -344,18 +408,20 @@ Expected: **91 tests passing**
 ### Backend (Render)
 
 `render.yaml` at the repo root configures a Render Web Service automatically.
+Python version is pinned to **3.11.9** in `render.yaml`.
 
 Set these in the Render dashboard:
 - `MONGODB_URI`
 - `MODEL_DOWNLOAD_URL`
+- `ALLOWED_ORIGINS` (your Vercel frontend URL)
 
 ### Frontend (Vercel)
 
 ```bash
 cd frontend
 npm run build
-# Deploy dist/ to Vercel
-# Set VITE_API_URL to your Render backend URL
+# Deploy the generated dist/ folder to Vercel
+# Set VITE_API_URL to your Render backend URL in Vercel environment variables
 ```
 
 ---
@@ -367,9 +433,10 @@ npm run build
 - Model weights (`models/`) gitignored — never committed.
 - Generated outputs (`outputs/`) gitignored.
 - Test images (`test_data/`) gitignored.
-- CORS restricted via `ALLOWED_ORIGINS`.
+- CORS restricted via `ALLOWED_ORIGINS`; defaults to localhost only.
+- Evidence image endpoint uses safe path handling to reject path traversal.
 - No authentication implemented (prototype scope) — add API key middleware before production use.
 
 ---
 
-*SONARIS — Built for ocean safety. Smart India Hackathon 2025.*
+*SONARIS — Built for ocean safety. Smart India Hackathon 2026.*
