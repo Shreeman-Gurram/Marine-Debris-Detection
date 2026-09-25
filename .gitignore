@@ -1,36 +1,64 @@
-# Python
+# =============================================================================
+# SONARIS .gitignore
+# =============================================================================
+
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.egg-info/
+*.egg
+.eggs/
+
+# Build artifacts
 dist/
 build/
-.eggs/
-node_modules/
+
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
 # Environment / secrets — NEVER commit real credentials
 .env
+.env.local
+.env.*.local
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+
+# Ultralytics / YOLO run artifacts
+runs/
 
 # Outputs (large generated files)
 outputs/detection_test/
 outputs/integration_test/
 outputs/evidence/
+outputs/
 
 # Test data (large sonar tiles)
 test_data/
 
-# Model weights
+# Model weights (auto-downloaded at runtime)
 models/
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
