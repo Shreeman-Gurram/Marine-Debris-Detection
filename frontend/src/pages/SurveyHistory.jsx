@@ -25,19 +25,28 @@ import {
 import { Download } from "lucide-react";
 import SectionHeader from "../components/SectionHeader";
 import Badge from "../components/Badge";
-import { getRecentSurveys, evidenceUrl, reportPdfUrl } from "../services/api";
+import { getRecentSurveys, getBatches, evidenceUrl, reportPdfUrl } from "../services/api";
 import { formatAnomalyName, formatAlertDate } from "../utils/alerts";
 import { RISK_TONE } from "../utils/constants";
 
 const ITEMS_PER_PAGE = 10;
 
 export default function SurveyHistory() {
+  // View mode: "single" | "batch"
+  const [historyMode, setHistoryMode] = useState("single");
+
+  // Single surveys state
   const [surveys, setSurveys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterMode, setFilterMode] = useState("ALL"); // "ALL" | "WITH_DETECTIONS" | "NO_DETECTIONS" | "GPS" | "LOCAL"
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Batch analyses state
+  const [batches, setBatches] = useState([]);
+  const [loadingBatches, setLoadingBatches] = useState(false);
+  const [batchesError, setBatchesError] = useState(null);
 
   async function loadHistory() {
     try {
@@ -53,8 +62,23 @@ export default function SurveyHistory() {
     }
   }
 
+  async function loadBatchesHistory() {
+    try {
+      setLoadingBatches(true);
+      const data = await getBatches(50);
+      setBatches(data || []);
+      setBatchesError(null);
+    } catch (err) {
+      console.error("Failed to load batch history:", err);
+      setBatchesError(err.message || "Failed to retrieve batch analyses from database.");
+    } finally {
+      setLoadingBatches(false);
+    }
+  }
+
   useEffect(() => {
     loadHistory();
+    loadBatchesHistory();
   }, []);
 
   // Summary Metrics computed from actual surveys
@@ -81,6 +105,29 @@ export default function SurveyHistory() {
       totalAnomalies,
     };
   }, [surveys]);
+
+  // Batch Summary Metrics
+  const batchSummary = useMemo(() => {
+    let totalFrames = 0;
+    let totalRaw = 0;
+    let totalTracks = 0;
+    let totalMerged = 0;
+
+    batches.forEach((b) => {
+      totalFrames += b.processed_frames || b.total_frames || 0;
+      totalRaw += b.total_raw_detections || 0;
+      totalTracks += b.total_persistent_tracks || 0;
+      totalMerged += b.duplicates_merged || 0;
+    });
+
+    return {
+      total: batches.length,
+      totalFrames,
+      totalRaw,
+      totalTracks,
+      totalMerged,
+    };
+  }, [batches]);
 
   // Client-side filtering & search
   const filteredSurveys = useMemo(() => {
@@ -171,8 +218,28 @@ export default function SurveyHistory() {
         </div>
       )}
 
-      {/* SUMMARY KPI STRIP */}
-      <div className="kpi-summary-grid" style={{ marginBottom: "20px" }}>
+      {/* View Mode Toggle: Single Surveys vs Batch Analyses */}
+      <div className="view-mode-pill" style={{ marginBottom: "20px" }}>
+        <button
+          type="button"
+          className={historyMode === "single" ? "active" : ""}
+          onClick={() => setHistoryMode("single")}
+        >
+          <FileImage size={14} /> Single Surveys ({summary.total})
+        </button>
+        <button
+          type="button"
+          className={historyMode === "batch" ? "active" : ""}
+          onClick={() => setHistoryMode("batch")}
+        >
+          <Layers size={14} /> Batch Analyses ({batches.length})
+        </button>
+      </div>
+
+      {historyMode === "single" && (
+        <>
+          {/* SUMMARY KPI STRIP */}
+          <div className="kpi-summary-grid" style={{ marginBottom: "20px" }}>
         <div className="kpi-card">
           <div className="kpi-label">
             <span>Total Surveys</span>
@@ -590,6 +657,201 @@ export default function SurveyHistory() {
             </div>
           )}
         </section>
+      )}
+        </>
+      )}
+
+      {/* ============================================================ */}
+      {/* VIEW 2: BATCH ANALYSES HISTORY (Phase 3)                    */}
+      {/* ============================================================ */}
+      {historyMode === "batch" && (
+        <>
+          {batchesError && (
+            <div
+              style={{
+                marginBottom: "20px",
+                padding: "14px 18px",
+                borderRadius: "10px",
+                background: "rgba(243, 109, 122, 0.12)",
+                border: "1px solid rgba(243, 109, 122, 0.3)",
+                color: "#ff8b97",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+              }}
+            >
+              <AlertTriangle size={18} />
+              <span>{batchesError}</span>
+            </div>
+          )}
+
+          {/* BATCH SUMMARY KPI STRIP */}
+          <div className="kpi-summary-grid" style={{ marginBottom: "20px" }}>
+            <div className="kpi-card">
+              <div className="kpi-label">
+                <span>Total Batches</span>
+                <Layers size={15} color="var(--primary)" />
+              </div>
+              <div className="kpi-value">{batchSummary.total}</div>
+              <div className="kpi-sub">Multi-frame survey sessions</div>
+            </div>
+
+            <div className="kpi-card">
+              <div className="kpi-label">
+                <span>Frames Processed</span>
+                <FileImage size={15} color="var(--primary)" />
+              </div>
+              <div className="kpi-value">{batchSummary.totalFrames}</div>
+              <div className="kpi-sub">Total sequential sonar frames</div>
+            </div>
+
+            <div className="kpi-card">
+              <div className="kpi-label">
+                <span>Raw YOLO Detections</span>
+                <ScanLine size={15} color="var(--amber)" />
+              </div>
+              <div className="kpi-value" style={{ color: batchSummary.totalRaw > 0 ? "var(--amber-text)" : undefined }}>
+                {batchSummary.totalRaw}
+              </div>
+              <div className="kpi-sub">Frame-level acoustic contacts</div>
+            </div>
+
+            <div className="kpi-card">
+              <div className="kpi-label">
+                <span>Persistent Anomalies</span>
+                <ShieldAlert size={15} color="var(--primary)" />
+              </div>
+              <div className="kpi-value" style={{ color: "var(--primary2)" }}>
+                {batchSummary.totalTracks}
+              </div>
+              <div className="kpi-sub">Multi-frame correlated targets</div>
+            </div>
+          </div>
+
+          {/* BATCH ANALYSES CONTENT LISTING */}
+          {loadingBatches ? (
+            <div style={{ padding: "60px 20px", textAlign: "center", color: "var(--muted)" }}>
+              <ScanLine size={36} color="var(--primary)" style={{ animation: "spin 2s linear infinite", marginBottom: "12px" }} />
+              <p>Retrieving batch analyses from MongoDB...</p>
+            </div>
+          ) : batches.length === 0 ? (
+            <div className="clean-scan-card" style={{ margin: "20px 0" }}>
+              <Layers size={48} color="var(--primary)" style={{ margin: "0 auto 12px auto", opacity: 0.8 }} />
+              <h3 style={{ color: "var(--text)", marginBottom: "6px" }}>No Batch Analysis Records</h3>
+              <p style={{ fontSize: "13px", color: "var(--muted)", maxWidth: "460px", margin: "0 auto" }}>
+                Upload a sequential sonar frame batch to track persistent anomalies across consecutive frames and eliminate duplicate counts.
+              </p>
+              <div style={{ marginTop: "18px" }}>
+                <Link to="/surveys/new" className="primary-btn">
+                  <Plus size={16} /> Start First Batch Analysis
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <section className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "12px" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--line)", color: "var(--muted)", background: "var(--panel-alt)" }}>
+                      <th style={{ padding: "12px 14px" }}>BATCH ID</th>
+                      <th style={{ padding: "12px 14px" }}>DATE</th>
+                      <th style={{ padding: "12px 14px", textAlign: "center" }}>FRAMES</th>
+                      <th style={{ padding: "12px 14px", textAlign: "center" }}>RAW DETECTIONS</th>
+                      <th style={{ padding: "12px 14px", textAlign: "center" }}>PERSISTENT ANOMALIES</th>
+                      <th style={{ padding: "12px 14px", textAlign: "center" }}>MERGED DUPLICATES</th>
+                      <th style={{ padding: "12px 14px", textAlign: "center" }}>STATUS</th>
+                      <th style={{ padding: "12px 14px", textAlign: "right" }}>ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batches.map((batch) => {
+                      const batchTargetId = batch.batch_db_id || batch.id || batch._id || batch.batch_id;
+                      const framesCount = batch.processed_frames || batch.total_frames || 0;
+                      const rawCount = batch.total_raw_detections || 0;
+                      const tracksCount = batch.total_persistent_tracks || 0;
+                      const mergedCount = batch.duplicates_merged ?? Math.max(0, rawCount - tracksCount);
+
+                      return (
+                        <tr
+                          key={batchTargetId}
+                          style={{
+                            borderBottom: "1px solid var(--line)",
+                            transition: "background 0.15s ease",
+                          }}
+                        >
+                          {/* Batch ID */}
+                          <td style={{ padding: "14px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <Layers size={18} color="var(--primary)" style={{ flexShrink: 0 }} />
+                              <div>
+                                <strong
+                                  style={{
+                                    color: "var(--text)",
+                                    display: "block",
+                                    fontSize: "13px",
+                                    fontFamily: "monospace",
+                                  }}
+                                >
+                                  {batch.batch_id ? `${batch.batch_id.slice(0, 12)}...` : batchTargetId}
+                                </strong>
+                                <span style={{ fontSize: "11px", color: "var(--muted)" }}>
+                                  DB: {batchTargetId}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Date */}
+                          <td style={{ padding: "14px", color: "var(--muted)" }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                              <Clock size={13} /> {formatAlertDate(batch.created_at)}
+                            </span>
+                          </td>
+
+                          {/* Frames */}
+                          <td style={{ padding: "14px", textAlign: "center", fontWeight: "600" }}>
+                            {framesCount} frames
+                          </td>
+
+                          {/* Raw Detections */}
+                          <td style={{ padding: "14px", textAlign: "center", fontWeight: "600", color: rawCount > 0 ? "var(--amber-text)" : undefined }}>
+                            {rawCount}
+                          </td>
+
+                          {/* Persistent Anomalies */}
+                          <td style={{ padding: "14px", textAlign: "center", fontWeight: "700", color: "var(--primary2)" }}>
+                            {tracksCount}
+                          </td>
+
+                          {/* Merged Duplicates */}
+                          <td style={{ padding: "14px", textAlign: "center", fontWeight: "600", color: "var(--green)" }}>
+                            {mergedCount}
+                          </td>
+
+                          {/* Status */}
+                          <td style={{ padding: "14px", textAlign: "center" }}>
+                            <span className="badge badge-success">COMPLETED</span>
+                          </td>
+
+                          {/* Action */}
+                          <td style={{ padding: "14px", textAlign: "right" }}>
+                            <Link
+                              to={`/batches/${batchTargetId}`}
+                              className="secondary-btn small"
+                              style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
+                            >
+                              View Dossier <ArrowUpRight size={13} />
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
       )}
     </div>
   );

@@ -5,7 +5,9 @@ SONARIS Backend — MongoDB Atlas Connection + Persistence
 
 Uses environment variable MONGODB_URI (loaded from .env if present).
 Database: sonaris
-Collection: analyses
+Collections:
+  analyses — single-image survey results (unchanged)
+  batches  — multi-frame batch analysis results (Phase 2)
 
 Design principles:
   - Connection is created lazily on first use.
@@ -34,8 +36,9 @@ logger = logging.getLogger("sonaris.database")
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DB_NAME         = "sonaris"
-COLLECTION_NAME = "analyses"
+DB_NAME               = "sonaris"
+COLLECTION_NAME       = "analyses"
+BATCH_COLLECTION_NAME = "batches"
 _CONNECT_TIMEOUT_MS = 5000   # 5s timeout for Atlas connection check
 _SERVER_TIMEOUT_MS  = 5000
 
@@ -103,6 +106,11 @@ def get_analyses_collection():
     return get_database()[COLLECTION_NAME]
 
 
+def get_batches_collection():
+    """Return the 'batches' collection handle (Phase 2 batch analyses)."""
+    return get_database()[BATCH_COLLECTION_NAME]
+
+
 # ---------------------------------------------------------------------------
 # Document operations
 # ---------------------------------------------------------------------------
@@ -141,4 +149,42 @@ def insert_analysis(document: Dict[str, Any]) -> str:
     except Exception as exc:
         raise RuntimeError(
             f"MongoDB insert_one failed: {exc}"
+        ) from exc
+
+
+def insert_batch_analysis(document: Dict[str, Any]) -> str:
+    """
+    Insert one batch analysis document into the batches collection.
+
+    Automatically adds a UTC 'created_at' timestamp if not already present.
+    Uses the same lazy MongoDB singleton as insert_analysis() — no second client.
+
+    Args:
+        document: Full batch result dict from BatchAnalysisService.
+
+    Returns:
+        The inserted document's ObjectId as a string.
+
+    Raises:
+        MongoUnavailableError: If MongoDB is not configured or unreachable.
+        RuntimeError: If the insert itself fails for any other reason.
+    """
+    doc = dict(document)
+    if "created_at" not in doc:
+        doc["created_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        collection = get_batches_collection()
+        result = collection.insert_one(doc)
+        inserted_id = str(result.inserted_id)
+        logger.info(
+            "Batch document inserted. id=%s  collection=%s.%s",
+            inserted_id, DB_NAME, BATCH_COLLECTION_NAME,
+        )
+        return inserted_id
+    except MongoUnavailableError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"MongoDB insert_one (batches) failed: {exc}"
         ) from exc

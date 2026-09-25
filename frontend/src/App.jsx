@@ -12,6 +12,7 @@ import DetectionMap from "./pages/DetectionMap";
 import SurveyHistory from "./pages/SurveyHistory";
 import Analytics from "./pages/Analytics";
 import Placeholder from "./pages/Placeholder";
+import BatchResult from "./pages/BatchResult";
 
 export default function App() {
   return (
@@ -22,6 +23,8 @@ export default function App() {
         <Route path="/surveys/new"          element={<NewSurvey />} />
         <Route path="/analysis/:analysisId" element={<AnalysisResult />} />
         <Route path="/surveys/:analysisId"  element={<AnalysisResult />} />
+        <Route path="/batches/:batchId"     element={<BatchResult />} />
+        <Route path="/batch/:batchId"       element={<BatchResult />} />
         <Route path="/reports"              element={<Reports />} />
         <Route path="/alerts"               element={<Alerts />} />
         <Route path="/map"                  element={<DetectionMap />} />

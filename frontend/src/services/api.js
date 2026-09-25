@@ -120,6 +120,95 @@ export function reportPdfUrl(analysisId) {
 }
 
 // ---------------------------------------------------------------------------
+// Batch Analysis & Persistent Tracking — Phase 2 & 3
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload a batch of 1–10 sequential sonar images and run the batch analysis pipeline.
+ * Files must be provided in chronological order.
+ * @param {File[]} files - Array of File objects in exact chronological survey order.
+ * @param {Object} [meta] - Optional shared metadata { slant_range_m, heading_deg, latitude, longitude, gps_accuracy_m }
+ * @returns {Promise<Object>} - API response with frames, tracks, and batch summary metrics
+ */
+export async function analyzeBatch(files, meta = {}) {
+  if (!files || files.length === 0) {
+    throw new Error("At least one sonar image is required.");
+  }
+  if (files.length > 10) {
+    throw new Error("Batch exceeds maximum of 10 images.");
+  }
+
+  const form = new FormData();
+  for (const file of files) {
+    form.append("files", file, file.name);
+  }
+
+  const range = meta.slant_range_m != null ? meta.slant_range_m : meta.range_m;
+  if (range != null && range !== "") {
+    form.append("slant_range_m", range);
+  }
+  if (meta.heading_deg != null && meta.heading_deg !== "") {
+    form.append("heading_deg", meta.heading_deg);
+  }
+  if (meta.latitude != null && meta.latitude !== "") {
+    form.append("latitude", meta.latitude);
+  }
+  if (meta.longitude != null && meta.longitude !== "") {
+    form.append("longitude", meta.longitude);
+  }
+  if (meta.gps_accuracy_m != null && meta.gps_accuracy_m !== "") {
+    form.append("gps_accuracy_m", meta.gps_accuracy_m);
+  }
+
+  let res;
+  try {
+    res = await fetch(`${BASE}/analyze/batch`, { method: "POST", body: form });
+  } catch (netErr) {
+    throw new Error("Network error connecting to SONARIS API server. Please check your backend connection.");
+  }
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const errJson = await res.json();
+      detail = errJson.detail || detail;
+    } catch {}
+    if (res.status === 413) {
+      detail = "File size exceeds server upload limits. Please reduce image sizes.";
+    } else if (res.status === 415) {
+      detail = "Unsupported file format. Only .jpg, .jpeg, and .png are accepted.";
+    } else if (res.status === 503) {
+      detail = `Database error: ${detail}`;
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+/**
+ * Fetch a list of recent batch analyses from MongoDB.
+ * @param {number} [limit=20] - Max batch documents to fetch
+ * @returns {Promise<Array>}
+ */
+export async function getBatches(limit = 20) {
+  const res = await fetch(`${BASE}/batches?limit=${limit}`);
+  if (!res.ok) throw new Error(`Batches fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Fetch a single batch analysis by its MongoDB ObjectId string.
+ * @param {string} batchId - MongoDB ObjectId string (or batch_db_id)
+ * @returns {Promise<Object|null>}
+ */
+export async function getBatch(batchId) {
+  const res = await fetch(`${BASE}/batches/${batchId}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Batch fetch failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 export async function healthCheck() {

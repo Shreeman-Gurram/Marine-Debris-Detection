@@ -36,9 +36,12 @@ from .services.model_loader import (
     is_model_available,
     get_default_model_path,
 )
+from .services.batch_service import BatchAnalysisService, BATCH_MAX_FILES
 from .database.mongodb import (
     insert_analysis,
+    insert_batch_analysis,
     get_analyses_collection,
+    get_batches_collection,
     MongoUnavailableError,
 )
 
@@ -92,6 +95,19 @@ def _get_service() -> AnalysisService:
         model_path = ensure_model_available()
         _service = AnalysisService(model_path=model_path)
     return _service
+
+
+# ---------------------------------------------------------------------------
+# Lazy batch service — wraps the same AnalysisService singleton
+# ---------------------------------------------------------------------------
+_batch_service: Optional[BatchAnalysisService] = None
+
+
+def _get_batch_service() -> BatchAnalysisService:
+    global _batch_service
+    if _batch_service is None:
+        _batch_service = BatchAnalysisService(_get_service())
+    return _batch_service
 
 
 # ---------------------------------------------------------------------------
@@ -663,3 +679,183 @@ async def analyze_sonar_image(
         raise HTTPException(status_code=503, detail=f"Database insert failed: {exc}")
 
     return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# Routes — batch analysis  (Phase 2)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/analyze/batch", summary="Analyse a batch of sequential sonar frames")
+async def analyze_sonar_batch(
+    files: List[UploadFile] = File(
+        ..., description="Sequential sonar image files (.jpg or .png, max 10)"
+    ),
+    slant_range_m:  Optional[float] = Form(default=None),
+    heading_deg:    Optional[float] = Form(default=None),
+    latitude:       Optional[float] = Form(default=None),
+    longitude:      Optional[float] = Form(default=None),
+    gps_accuracy_m: Optional[float] = Form(default=None),
+) -> JSONResponse:
+    """
+    Run the SONARIS batch pipeline on 1–10 sequential sonar images.
+
+    Files are processed in the exact order they are uploaded (frame order).
+    Each frame passes through the full single-image pipeline (preprocessing,
+    YOLO, filtering, scoring, geolocation) and the resulting detections are
+    fed into the Phase 1 SonarTracker to produce persistent anomaly tracks.
+
+    Optional shared metadata (slant_range_m, heading_deg, latitude, longitude)
+    is applied identically to every frame.  No GPS coordinates are fabricated.
+
+    Persists the batch result to the MongoDB 'batches' collection.
+    Returns the full batch result including frame details and track summaries.
+    """
+    # --- Validate file count -------------------------------------------
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="At least one image file is required.")
+    if len(files) > BATCH_MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch exceeds maximum of {BATCH_MAX_FILES} images (received {len(files)}).",
+        )
+
+    allowed_suffixes = {".jpg", ".jpeg", ".png"}
+
+    # --- Validate file types -------------------------------------------
+    for f in files:
+        suffix = Path(f.filename or "upload.jpg").suffix.lower()
+        if suffix not in allowed_suffixes:
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported format '{suffix}' in file '{f.filename}'. "
+                       f"Accepted: {sorted(allowed_suffixes)}",
+            )
+
+    # --- Save uploads to temp files, preserving order ------------------
+    frame_tuples: List[tuple] = []
+    tmp_paths: List[Path] = []
+    try:
+        for upload in files:
+            suffix = Path(upload.filename or "upload.jpg").suffix.lower()
+            original_filename = upload.filename or "upload.jpg"
+            try:
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=suffix, prefix="sonaris_batch_"
+                ) as tmp:
+                    shutil.copyfileobj(upload.file, tmp)
+                    tmp_path = Path(tmp.name)
+                tmp_paths.append(tmp_path)
+                frame_tuples.append((tmp_path, original_filename))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to save uploaded file '{upload.filename}': {exc}",
+                )
+            finally:
+                await upload.close()
+
+        # --- Build optional shared metadata ----------------------------
+        sonar_meta: Optional[Dict[str, Any]] = None
+        if any(v is not None for v in (slant_range_m, heading_deg, latitude, longitude, gps_accuracy_m)):
+            sonar_meta = {}
+            if slant_range_m  is not None: sonar_meta["range_m"]        = slant_range_m
+            if heading_deg    is not None: sonar_meta["heading_deg"]    = heading_deg
+            if latitude       is not None: sonar_meta["latitude"]       = latitude
+            if longitude      is not None: sonar_meta["longitude"]      = longitude
+            if gps_accuracy_m is not None: sonar_meta["gps_accuracy_m"] = gps_accuracy_m
+
+        # --- Run batch pipeline ----------------------------------------
+        try:
+            batch_svc = _get_batch_service()
+            result = batch_svc.analyze_batch(
+                frames=frame_tuples,
+                sonar_metadata_dict=sonar_meta,
+            )
+        except Exception as exc:
+            logger.exception("Batch pipeline error: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Batch pipeline failed: {exc}")
+
+        # --- Persist to MongoDB ----------------------------------------
+        try:
+            batch_db_id = insert_batch_analysis(result)
+            result["batch_db_id"] = batch_db_id
+            logger.info(
+                "Batch persisted. db_id=%s  batch_id=%s  frames=%d  tracks=%d",
+                batch_db_id, result["batch_id"],
+                result["total_frames"], result["total_persistent_tracks"],
+            )
+        except MongoUnavailableError as exc:
+            logger.error("MongoDB unavailable for batch: %s", exc)
+            raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
+        except RuntimeError as exc:
+            logger.error("MongoDB batch insert failed: %s", exc)
+            raise HTTPException(status_code=503, detail=f"Database insert failed: {exc}")
+
+        return JSONResponse(content=result)
+
+    finally:
+        # Always clean up temp files regardless of success/failure
+        for tmp_path in tmp_paths:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@app.get("/api/batches", summary="List recent batch analyses")
+async def list_batches(limit: int = 20):
+    """
+    Return a lightweight list of the most recent batch analyses from MongoDB.
+    Each entry includes batch_id, total_frames, total_persistent_tracks, and
+    created_at but omits the heavy per-frame detection arrays to keep the
+    response small.
+    """
+    try:
+        col = get_batches_collection()
+        projection = {
+            "batch_id":                1,
+            "batch_db_id":             1,
+            "type":                    1,
+            "created_at":              1,
+            "total_frames":            1,
+            "processed_frames":        1,
+            "total_raw_detections":    1,
+            "total_persistent_tracks": 1,
+            "duplicates_merged":       1,
+        }
+        docs = list(col.find({}, projection).sort("created_at", -1).limit(limit))
+        return [_serialize_doc(d) for d in docs]
+    except MongoUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.exception("List batches error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"List batches failed: {exc}")
+
+
+@app.get("/api/batches/{batch_id}", summary="Fetch one batch analysis by DB ObjectId")
+async def get_batch(batch_id: str):
+    """
+    Fetch a single batch analysis document by its MongoDB ObjectId string.
+    Returns 404 if not found.
+    """
+    try:
+        oid = ObjectId(batch_id)
+    except Exception:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid batch_id format: '{batch_id}'"
+        )
+    try:
+        col = get_batches_collection()
+        doc = col.find_one({"_id": oid})
+        if doc is None:
+            raise HTTPException(
+                status_code=404, detail=f"Batch '{batch_id}' not found."
+            )
+        return _serialize_doc(doc)
+    except HTTPException:
+        raise
+    except MongoUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Get batch error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Fetch batch failed: {exc}")
